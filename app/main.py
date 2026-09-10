@@ -15,6 +15,27 @@ from . import database as db
 from . import rules
 from . import scanner
 
+VALID_DIRECTIONS = ("below", "above", "range", "check")
+CHECK_METRICS = ("计数平衡", "相机一致性", "缺陷勾稽")
+
+
+def _validate_rule(body):
+    """规则参数公共校验"""
+    if body.direction not in VALID_DIRECTIONS:
+        raise HTTPException(400, "direction 必须是 below/above/range/check")
+    if body.level not in ("info", "warning", "critical"):
+        raise HTTPException(400, "level 必须是 info/warning/critical")
+    if body.direction == "check":
+        if body.metric not in CHECK_METRICS:
+            raise HTTPException(400, "一致性校验的指标必须是：" + "/".join(CHECK_METRICS))
+    else:
+        if body.metric in CHECK_METRICS:
+            raise HTTPException(400, f"指标 {body.metric} 需要选择「一致性校验」判定方式")
+        if body.direction == "range" and (body.threshold is None or body.threshold_high is None):
+            raise HTTPException(400, "区间判定需要同时提供下限和上限")
+        if body.direction != "range" and body.threshold is None:
+            raise HTTPException(400, "请提供阈值")
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 
@@ -201,14 +222,7 @@ def list_metrics():
 
 @app.post("/api/rules")
 def add_rule(body: RuleIn):
-    if body.direction not in ("below", "above", "range"):
-        raise HTTPException(400, "direction 必须是 below/above/range")
-    if body.level not in ("info", "warning", "critical"):
-        raise HTTPException(400, "level 必须是 info/warning/critical")
-    if body.direction == "range" and (body.threshold is None or body.threshold_high is None):
-        raise HTTPException(400, "区间判定需要同时提供下限和上限")
-    if body.direction != "range" and body.threshold is None:
-        raise HTTPException(400, "请提供阈值")
+    _validate_rule(body)
     rid = db.execute(
         "INSERT INTO rules(name,metric,direction,threshold,threshold_high,machine_id,"
         "category,level,enabled,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -224,10 +238,7 @@ def update_rule(rid: int, body: RuleIn):
     row = db.query_one("SELECT * FROM rules WHERE id=?", (rid,))
     if not row:
         raise HTTPException(404, "规则不存在")
-    if body.direction not in ("below", "above", "range"):
-        raise HTTPException(400, "direction 必须是 below/above/range")
-    if body.level not in ("info", "warning", "critical"):
-        raise HTTPException(400, "level 必须是 info/warning/critical")
+    _validate_rule(body)
     db.execute(
         "UPDATE rules SET name=?,metric=?,direction=?,threshold=?,threshold_high=?,"
         "machine_id=?,category=?,level=?,enabled=? WHERE id=?",

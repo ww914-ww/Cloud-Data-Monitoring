@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS files (
     first_seen TEXT,
     parsed_at TEXT,
     error TEXT,
+    ok_count INTEGER DEFAULT 0,       -- 相机级(文件级)良品数
+    ng_count INTEGER DEFAULT 0,       -- 相机级不良数
+    other_count INTEGER DEFAULT 0,    -- 相机级异常数(非OK/NG判定)
+    total_count INTEGER DEFAULT 0,    -- 相机级生产总数
+    batch_id INTEGER,                 -- 所属批次
     UNIQUE(machine_id, rel_path)
 );
 
@@ -66,6 +71,7 @@ CREATE TABLE IF NOT EXISTS batches (
     total INTEGER NOT NULL DEFAULT 0,
     ok_count INTEGER NOT NULL DEFAULT 0,
     ng_count INTEGER NOT NULL DEFAULT 0,
+    other_count INTEGER NOT NULL DEFAULT 0,   -- 异常数(非OK/NG判定)
     first_time TEXT,
     last_time TEXT,
     updated_at TEXT,
@@ -119,10 +125,30 @@ def get_conn():
         _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
+        _conn.execute("PRAGMA synchronous=NORMAL")  # WAL 下安全且大幅减少 fsync
         _conn.execute("PRAGMA busy_timeout=10000")
         _conn.executescript(SCHEMA)
+        _migrate(_conn)
         _conn.commit()
     return _conn
+
+
+# 已有库的结构升级：缺失列自动补齐（存量行按默认 0 处理）
+_MIGRATIONS = [
+    ("batches", "other_count", "ALTER TABLE batches ADD COLUMN other_count INTEGER NOT NULL DEFAULT 0"),
+    ("files", "ok_count", "ALTER TABLE files ADD COLUMN ok_count INTEGER DEFAULT 0"),
+    ("files", "ng_count", "ALTER TABLE files ADD COLUMN ng_count INTEGER DEFAULT 0"),
+    ("files", "other_count", "ALTER TABLE files ADD COLUMN other_count INTEGER DEFAULT 0"),
+    ("files", "total_count", "ALTER TABLE files ADD COLUMN total_count INTEGER DEFAULT 0"),
+    ("files", "batch_id", "ALTER TABLE files ADD COLUMN batch_id INTEGER"),
+]
+
+
+def _migrate(conn):
+    for _table, column, ddl in _MIGRATIONS:
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({_table})")]
+        if column not in cols:
+            conn.execute(ddl)
 
 
 def execute(sql, params=()):
@@ -132,6 +158,14 @@ def execute(sql, params=()):
         cur = conn.execute(sql, params)
         conn.commit()
         return cur.lastrowid
+
+
+def execute_many(sql, seq):
+    """线程安全批量执行写操作（单事务，避免逐行提交）"""
+    with _lock:
+        conn = get_conn()
+        conn.executemany(sql, seq)
+        conn.commit()
 
 
 def query(sql, params=()):
@@ -173,6 +207,13 @@ DEFAULT_RULES = [
          threshold_high=None, level="warning"),
     dict(name="单批次NG数", metric="NG数", direction="above", threshold=50,
          threshold_high=None, level="warning"),
+    # 一致性校验：threshold 为容差(0 表示必须完全相等)
+    dict(name="计数平衡校验", metric="计数平衡", direction="check", threshold=0,
+         threshold_high=None, level="critical"),
+    dict(name="相机一致性校验", metric="相机一致性", direction="check", threshold=0,
+         threshold_high=None, level="critical"),
+    dict(name="缺陷勾稽校验", metric="缺陷勾稽", direction="check", threshold=0,
+         threshold_high=None, level="critical"),
 ]
 
 

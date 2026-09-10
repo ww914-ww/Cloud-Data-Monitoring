@@ -55,10 +55,11 @@ def _to_float(v):
 def parse_defect_file(path, max_defects=50):
     """解析缺陷明细文件。
 
+    判定结果三分：OK=良品 / NG=不良 / 其他值(如"异常")=异常。
     返回 dict:
-      rows: [(record_id, time, result, defects)]
-      defects: [{"name","area","width","height"}] 仅 NG 行
-      ok/ng/total: 计数
+      ok/ng/other/total: 计数
+      rows: [(record_id, time, result)]  全部行
+      defects: [(record_id, time, defects)]  仅 NG 行的缺陷明细
     """
     wb = load_workbook(path, read_only=True, data_only=True)
     ws = wb[wb.sheetnames[0]]
@@ -66,42 +67,45 @@ def parse_defect_file(path, max_defects=50):
     header = next(it, None)
     if not header:
         wb.close()
-        return {"rows": [], "ok": 0, "ng": 0, "total": 0, "defects": []}
+        return {"rows": [], "ok": 0, "ng": 0, "other": 0, "total": 0, "defects": []}
 
     col = {name: i for i, name in enumerate(header) if name}
     i_id, i_time, i_result = col.get("ID"), col.get("时间"), col.get("判定结果")
 
-    result = {"ok": 0, "ng": 0, "total": 0, "rows": [], "defects": []}
+    result = {"ok": 0, "ng": 0, "other": 0, "total": 0, "rows": [], "defects": []}
     for row in it:
         rid = row[i_id] if i_id is not None and i_id < len(row) else None
         t = row[i_time] if i_time is not None and i_time < len(row) else None
         verdict = row[i_result] if i_result is not None and i_result < len(row) else None
-        if verdict is None:
+        if verdict is None or str(verdict).strip() == "":
             continue
         verdict = str(verdict).strip().upper()
         result["total"] += 1
         t = str(t)[:19] if t else None
         row_defects = []
-        if verdict == "NG":
-            result["ng"] += 1
-            for n in range(1, max_defects + 1):
-                nm = col.get(f"不良{n}缺陷名")
-                if nm is None or nm >= len(row):
-                    break
-                name = row[nm]
-                if name is None or str(name).strip() == "":
-                    continue
-                row_defects.append({
-                    "name": str(name),
-                    "area": _to_float(row[col[f"不良{n}面积"]]) if f"不良{n}面积" in col else None,
-                    "width": _to_float(row[col[f"不良{n}宽度"]]) if f"不良{n}宽度" in col else None,
-                    "height": _to_float(row[col[f"不良{n}高度"]]) if f"不良{n}高度" in col else None,
-                })
-            result["rows"].append((str(rid), t, verdict))
-            result["defects"].append((str(rid), t, row_defects))
-        else:
+        if verdict == "OK":
             result["ok"] += 1
             result["rows"].append((str(rid), t, verdict))
+            continue
+        if verdict == "NG":
+            result["ng"] += 1
+        else:
+            result["other"] += 1  # 异常（非 OK/NG 判定）
+        for n in range(1, max_defects + 1):
+            nm = col.get(f"不良{n}缺陷名")
+            if nm is None or nm >= len(row):
+                break
+            name = row[nm]
+            if name is None or str(name).strip() == "":
+                continue
+            row_defects.append({
+                "name": str(name),
+                "area": _to_float(row[col[f"不良{n}面积"]]) if f"不良{n}面积" in col else None,
+                "width": _to_float(row[col[f"不良{n}宽度"]]) if f"不良{n}宽度" in col else None,
+                "height": _to_float(row[col[f"不良{n}高度"]]) if f"不良{n}高度" in col else None,
+            })
+        result["rows"].append((str(rid), t, verdict))
+        result["defects"].append((str(rid), t, row_defects))
     wb.close()
     return result
 

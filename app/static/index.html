@@ -106,10 +106,10 @@ td.warning, span.warning { background: var(--warn); color: #fff; border-radius: 
         <div class="form-grid">
           <div><label>规则名称</label><input id="r-name" placeholder="如：良率下限"></div>
           <div><label>监控指标</label><select id="r-metric"></select></div>
-          <div><label>判定方式</label><select id="r-direction">
-            <option value="below">低于阈值</option><option value="above">高于阈值</option><option value="range">超出区间</option></select></div>
-          <div><label>阈值 / 下限</label><input id="r-threshold" type="number" step="any" placeholder="95"></div>
-          <div><label>区间上限（仅区间）</label><input id="r-threshold-high" type="number" step="any"></div>
+          <div><label>判定方式</label><select id="r-direction" onchange="onDirectionChange()">
+            <option value="below">低于阈值</option><option value="above">高于阈值</option><option value="range">超出区间</option><option value="check">一致性校验</option></select></div>
+          <div><label>阈值 / 下限 / 容差</label><input id="r-threshold" type="number" step="any" placeholder="95"></div>
+          <div><label>区间上限（仅区间判定）</label><input id="r-threshold-high" type="number" step="any"></div>
           <div><label>适用机台</label><select id="r-machine"></select></div>
           <div><label>适用检测项目</label><input id="r-category" placeholder="留空=全部项目"></div>
           <div><label>严重级别</label><select id="r-level">
@@ -296,11 +296,13 @@ function fmtNum(v) { return v == null ? '-' : Number(v).toPrecision(6).replace(/
 // ---------- 规则管理 ----------
 async function loadRules() {
   const rules = await api('/api/rules');
+  const dirMap = { below: '低于', above: '高于', range: '超出区间', check: '一致性校验' };
   $('rule-body').innerHTML = rules.map(r => {
-    const dir = { below: '低于', above: '高于', range: '超出区间' }[r.direction];
-    const th = r.direction === 'range' ? `${r.threshold} ~ ${r.threshold_high}` : r.threshold;
+    const th = r.direction === 'check'
+      ? `容差 ${r.threshold != null ? r.threshold : 0}`
+      : (r.direction === 'range' ? `${r.threshold} ~ ${r.threshold_high}` : r.threshold);
     return `<tr>
-      <td>${esc(r.name)}</td><td>${esc(r.metric)}</td><td>${dir}</td><td>${th}</td>
+      <td>${esc(r.name)}</td><td>${esc(r.metric)}</td><td>${dirMap[r.direction]}</td><td>${th}</td>
       <td>${r.machine_name || '全部'}</td><td>${esc(r.category) || '全部'}</td>
       <td><span class="badge ${r.level}">${{critical:'严重',warning:'警告',info:'提示'}[r.level]}</span></td>
       <td>${r.enabled ? '<span class="badge ok">启用</span>' : '<span class="badge off">停用</span>'}</td>
@@ -312,15 +314,27 @@ async function loadRules() {
 
 async function loadMetricOptions() {
   const metrics = await api('/api/metrics');
+  window._allMetrics = metrics;
+  renderMetricOptions();
   const machines = await api('/api/machines');
-  $('r-metric').innerHTML = metrics.map(m => `<option>${esc(m)}</option>`).join('');
   $('r-machine').innerHTML = '<option value="">全部机台</option>' + machines.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('');
 }
 
+const CHECK_METRICS = ['计数平衡', '相机一致性', '缺陷勾稽'];
+
+function renderMetricOptions() {
+  const isCheck = $('r-direction').value === 'check';
+  const list = isCheck ? CHECK_METRICS : (window._allMetrics || []).filter(m => !CHECK_METRICS.includes(m));
+  $('r-metric').innerHTML = list.map(m => `<option>${esc(m)}</option>`).join('');
+}
+
+function onDirectionChange() { renderMetricOptions(); }
+
 function fillRuleForm(r) {
   $('r-name').value = r ? r.name : '';
-  $('r-metric').value = r ? r.metric : '良率';
   $('r-direction').value = r ? r.direction : 'below';
+  renderMetricOptions();
+  $('r-metric').value = r ? r.metric : '良率';
   $('r-threshold').value = r && r.threshold != null ? r.threshold : '';
   $('r-threshold-high').value = r && r.threshold_high != null ? r.threshold_high : '';
   $('r-machine').value = r && r.machine_id != null ? r.machine_id : '';
