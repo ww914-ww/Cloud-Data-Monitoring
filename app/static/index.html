@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>云盘报表数据监控</title>
+<style>
+:root {
+  --bg: #f5f6f8; --card: #fff; --border: #e4e6eb;
+  --text: #1f2329; --muted: #8a9099;
+  --brand: #4b3fe3; --brand-soft: #f2f7ff;
+  --red: #e8463a; --red-bg: #fdeceb; --red-deep: #c53030;
+  --warn: #efaa17; --warn-bg: #fdf6e6;
+  --ok: #1dc981; --ok-bg: #e9faf3;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font: 14px/1.6 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; background: var(--bg); color: var(--text); }
+.topbar { background: #1d2330; color: #fff; padding: 0 20px; display: flex; align-items: center; gap: 16px; height: 52px; position: sticky; top: 0; z-index: 10; }
+.topbar h1 { font-size: 16px; font-weight: 600; white-space: nowrap; }
+.topbar select { padding: 5px 10px; border-radius: 6px; border: none; background: #323a4d; color: #fff; font-size: 13px; max-width: 240px; }
+.tabs { display: flex; gap: 4px; margin-left: auto; }
+.tabs button { background: transparent; border: none; color: #b8bfcc; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+.tabs button.active { background: var(--brand); color: #fff; }
+.wrap { max-width: 1280px; margin: 16px auto; padding: 0 16px; }
+.banner { background: var(--red); color: #fff; border-radius: 8px; padding: 10px 16px; margin-bottom: 14px; display: none; }
+.banner .b-title { font-weight: 700; margin-bottom: 2px; }
+.banner .b-item { font-size: 13px; opacity: .95; }
+.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.card .label { color: var(--muted); font-size: 12px; }
+.card .value { font-size: 24px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.card .value.danger { color: var(--red-deep); }
+.panel { background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 16px; }
+.panel-head { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
+.panel-head h2 { font-size: 15px; font-weight: 600; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; padding: 9px 14px; background: #fafbfc; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); white-space: nowrap; }
+td { padding: 9px 14px; border-bottom: 1px solid #f0f1f3; font-variant-numeric: tabular-nums; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: #f8f9fc; }
+tr.row-critical td { background: var(--red-bg); }
+tr.row-warning td { background: var(--warn-bg); }
+td.critical, span.critical { background: var(--red-deep); color: #fff; border-radius: 4px; padding: 1px 8px; font-weight: 600; display: inline-block; }
+td.warning, span.warning { background: var(--warn); color: #fff; border-radius: 4px; padding: 1px 8px; font-weight: 600; display: inline-block; }
+.badge { border-radius: 999px; padding: 1px 10px; font-size: 12px; display: inline-block; }
+.badge.critical { background: var(--red); color: #fff; }
+.badge.warning { background: var(--warn); color: #fff; }
+.badge.ok { background: var(--ok-bg); color: #0d8f5d; }
+.badge.off { background: #eef0f3; color: var(--muted); }
+.muted { color: var(--muted); }
+.dialog-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 50; }
+.dialog-bg.show { display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow: auto; }
+.dialog { background: #fff; border-radius: 12px; width: 900px; max-width: 100%; padding: 20px 24px; }
+.dialog h3 { font-size: 16px; margin-bottom: 12px; }
+.dialog .close { float: right; border: none; background: none; font-size: 20px; cursor: pointer; color: var(--muted); }
+.form-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px 12px; margin-bottom: 10px; }
+.form-grid label { font-size: 12px; color: var(--muted); display: block; }
+.form-grid input, .form-grid select { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+.btn { background: var(--brand); color: #fff; border: none; border-radius: 6px; padding: 6px 16px; cursor: pointer; font-size: 13px; }
+.btn.ghost { background: #fff; color: var(--text); border: 1px solid var(--border); }
+.btn.danger { background: var(--red); }
+.btn.mini { padding: 2px 10px; font-size: 12px; }
+.action-link { color: var(--brand); cursor: pointer; margin-right: 10px; }
+.action-link.del { color: var(--red); }
+.sub-table td { padding: 5px 10px; }
+.empty { text-align: center; color: var(--muted); padding: 30px 0; }
+#refresh-info { font-size: 12px; color: var(--muted); }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>云盘报表数据监控</h1>
+  <select id="machine-sel"></select>
+  <span id="machine-status" class="muted" style="color:#b8bfcc;font-size:12px"></span>
+  <div class="tabs">
+    <button class="active" data-tab="overview">监控总览</button>
+    <button data-tab="rules">规则管理</button>
+    <button data-tab="alerts">告警历史</button>
+  </div>
+</div>
+
+<div class="wrap">
+  <div id="banner" class="banner"></div>
+
+  <!-- 监控总览 -->
+  <div id="tab-overview">
+    <div class="cards" id="cards"></div>
+    <div class="panel">
+      <div class="panel-head"><h2>批次列表</h2><span class="muted" style="font-size:12px">点击行查看明细</span><span id="refresh-info" style="margin-left:auto"></span></div>
+      <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>机台</th><th>检测项目</th><th>批次</th><th>总数</th><th>OK</th><th>NG</th><th>良率</th><th>首片时间</th><th>末片时间</th><th>状态</th></tr></thead>
+        <tbody id="batch-body"></tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- 规则管理 -->
+  <div id="tab-rules" style="display:none">
+    <div class="panel">
+      <div class="panel-head"><h2>新增规则</h2></div>
+      <div style="padding:14px 16px">
+        <div class="form-grid">
+          <div><label>规则名称</label><input id="r-name" placeholder="如：良率下限"></div>
+          <div><label>监控指标</label><select id="r-metric"></select></div>
+          <div><label>判定方式</label><select id="r-direction">
+            <option value="below">低于阈值</option><option value="above">高于阈值</option><option value="range">超出区间</option></select></div>
+          <div><label>阈值 / 下限</label><input id="r-threshold" type="number" step="any" placeholder="95"></div>
+          <div><label>区间上限（仅区间）</label><input id="r-threshold-high" type="number" step="any"></div>
+          <div><label>适用机台</label><select id="r-machine"></select></div>
+          <div><label>适用检测项目</label><input id="r-category" placeholder="留空=全部项目"></div>
+          <div><label>严重级别</label><select id="r-level">
+            <option value="critical">严重（红色高亮）</option><option value="warning">警告</option><option value="info">提示</option></select></div>
+        </div>
+        <button class="btn" onclick="saveRule()">保存规则</button>
+        <span id="rule-msg" style="margin-left:10px;font-size:13px"></span>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>已有规则</h2><span class="muted" style="font-size:12px">修改保存后立即生效并重新判定</span></div>
+      <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>名称</th><th>指标</th><th>判定方式</th><th>阈值</th><th>适用机台</th><th>适用项目</th><th>级别</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody id="rule-body"></tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- 告警历史 -->
+  <div id="tab-alerts" style="display:none">
+    <div class="panel">
+      <div class="panel-head"><h2>告警记录</h2><span class="muted" style="font-size:12px">最多显示 500 条</span></div>
+      <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>时间</th><th>机台</th><th>项目</th><th>批次</th><th>规则</th><th>消息</th><th>指标值</th><th>级别</th><th>状态</th></tr></thead>
+        <tbody id="alert-body"></tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 批次详情弹层 -->
+<div class="dialog-bg" id="detail-bg">
+  <div class="dialog">
+    <button class="close" onclick="closeDetail()">×</button>
+    <h3 id="d-title"></h3>
+    <div id="d-summary" style="margin-bottom:12px"></div>
+    <div class="two-col">
+      <div class="panel" style="margin:0">
+        <div class="panel-head"><h2 style="font-size:13px">告警</h2></div>
+        <div style="max-height:180px;overflow:auto"><table class="sub-table"><tbody id="d-alerts"></tbody></table></div>
+      </div>
+      <div class="panel" style="margin:0">
+        <div class="panel-head"><h2 style="font-size:13px">测量指标</h2></div>
+        <div style="max-height:180px;overflow:auto"><table class="sub-table">
+          <thead><tr><th>指标</th><th>min</th><th>max</th><th>avg</th><th>n</th></tr></thead>
+          <tbody id="d-measures"></tbody></table></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:16px">
+      <div class="panel-head"><h2 style="font-size:13px">NG 明细（最多 500 条）</h2></div>
+      <div style="max-height:260px;overflow:auto"><table class="sub-table">
+        <thead><tr><th>片ID</th><th>时间</th><th>缺陷</th></tr></thead>
+        <tbody id="d-ngs"></tbody></table></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentMachine = '', machines = [], tab = 'overview', editRuleId = null;
+
+const $ = id => document.getElementById(id);
+const fmtTime = s => s ? s.replace('T',' ').slice(5,16) : '-';
+
+function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':String(s); return d.innerHTML; }
+
+async function api(url, opt) {
+  const r = await fetch(url, opt);
+  if (!r.ok) { const e = await r.json().catch(()=>({detail:r.statusText})); throw new Error(e.detail || r.statusText); }
+  return r.json();
+}
+
+// ---------- 机台与总览 ----------
+async function loadMachines() {
+  machines = await api('/api/machines');
+  const sel = $('machine-sel');
+  const cur = currentMachine;
+  sel.innerHTML = '<option value="">全部机台</option>' +
+    machines.map(m => `<option value="${m.id}" ${String(m.id)===cur?'selected':''}>${esc(m.name)}</option>`).join('');
+  if (!cur) currentMachine = '';
+  const m = machines.find(x => String(x.id) === currentMachine);
+  $('machine-status').textContent = m ? (m.online ? '● 在线' : '○ 离线') + (m.last_error ? '：' + m.last_error : '') : '';
+}
+
+async function loadOverview() {
+  const q = currentMachine ? `?machine_id=${currentMachine}` : '';
+  const batches = await api('/api/batches' + q);
+  const alerts = await api('/api/alerts' + (currentMachine ? `?machine_id=${currentMachine}&active_only=1` : '?active_only=1'));
+  renderBanner(alerts);
+  renderCards(batches, alerts);
+  renderBatches(batches);
+  $('refresh-info').textContent = '自动刷新 ' + new Date().toLocaleTimeString();
+}
+
+function renderBanner(alerts) {
+  const crit = alerts.filter(a => a.level === 'critical');
+  const warn = alerts.filter(a => a.level === 'warning');
+  const b = $('banner');
+  if (!alerts.length) { b.style.display = 'none'; return; }
+  b.style.display = 'block';
+  b.innerHTML = `<div class="b-title">⚠ 报警 ${alerts.length} 条（严重 ${crit.length} / 警告 ${warn.length}）</div>` +
+    alerts.slice(0, 3).map(a => `<div class="b-item">【${a.machine_name}·${a.batch_name}】${esc(a.message)}</div>`).join('') +
+    (alerts.length > 3 ? `<div class="b-item">……及其他 ${alerts.length - 3} 条</div>` : '');
+}
+
+function renderCards(batches, alerts) {
+  const total = batches.reduce((s, b) => s + b.total, 0);
+  const ok = batches.reduce((s, b) => s + b.ok_count, 0);
+  const y = total ? (ok / total * 100) : 0;
+  const crit = alerts.filter(a => a.level === 'critical').length;
+  $('cards').innerHTML = `
+    <div class="card"><div class="label">批次数</div><div class="value">${batches.length}</div></div>
+    <div class="card"><div class="label">总检测数</div><div class="value">${total.toLocaleString()}</div></div>
+    <div class="card"><div class="label">总体良率</div><div class="value ${crit?'danger':''}">${total ? y.toFixed(2) + '%' : '-'}<span class="muted" style="font-size:12px"> (OK ${ok.toLocaleString()})</span></div></div>
+    <div class="card"><div class="label">活动告警</div><div class="value ${alerts.length?'danger':''}">${alerts.length}</div></div>`;
+}
+
+function renderBatches(batches) {
+  const body = $('batch-body');
+  if (!batches.length) { body.innerHTML = '<tr><td colspan="10" class="empty">暂无批次数据，等待采集…</td></tr>'; return; }
+  body.innerHTML = batches.map(b => {
+    const rank = b.alert_rank || 0;
+    const rowCls = rank === 2 ? 'row-critical' : rank === 1 ? 'row-warning' : '';
+    const y = b.yield_pct;
+    let yHtml = y == null ? '-' : y.toFixed(2) + '%';
+    if (rank === 2) yHtml = `<span class="critical">${y.toFixed(2)}%</span>`;
+    else if (rank === 1) yHtml = `<span class="warning">${y.toFixed(2)}%</span>`;
+    const st = rank === 2 ? '<span class="badge critical">严重</span>' : rank === 1 ? '<span class="badge warning">警告</span>' : '<span class="badge ok">正常</span>';
+    return `<tr class="clickable ${rowCls}" onclick="openDetail(${b.id})">
+      <td>${esc(b.machine_name)}</td><td>${esc(b.category)}</td><td>${esc(b.batch_name)}</td>
+      <td>${b.total.toLocaleString()}</td><td>${b.ok_count.toLocaleString()}</td><td>${b.ng_count.toLocaleString()}</td>
+      <td>${yHtml}</td><td>${fmtTime(b.first_time)}</td><td>${fmtTime(b.last_time)}</td><td>${st}</td></tr>`;
+  }).join('');
+}
+
+// ---------- 批次详情 ----------
+async function openDetail(id) {
+  const b = await api('/api/batches/' + id);
+  $('d-title').textContent = `${b.machine_name} / ${b.category} / ${b.batch_name}`;
+  $('d-summary').innerHTML =
+    `总数 <b>${b.total.toLocaleString()}</b> ｜ OK <b>${b.ok_count.toLocaleString()}</b> ｜ NG <b>${b.ng_count.toLocaleString()}</b> ｜ 良率 <b class="${b.alerts.length?'critical':''}" style="${b.alerts.length?'':''}">${b.yield_pct == null ? '-' : b.yield_pct + '%'}</b>`;
+  $('d-alerts').innerHTML = b.alerts.length ? b.alerts.map(a =>
+    `<tr><td><span class="badge ${a.level}">${a.level === 'critical' ? '严重' : a.level === 'warning' ? '警告' : '提示'}</span></td><td>${esc(a.message)}</td></tr>`).join('')
+    : '<tr><td class="empty">无活动告警</td></tr>';
+  $('d-measures').innerHTML = b.measure_stats.length ? b.measure_stats.map(m =>
+    `<tr><td>${esc(m.metric_name)}</td><td>${fmtNum(m.min_v)}</td><td>${fmtNum(m.max_v)}</td><td>${fmtNum(m.avg_v)}</td><td>${m.cnt}</td></tr>`).join('')
+    : '<tr><td colspan="5" class="empty">暂无测量数据</td></tr>';
+  $('d-ngs').innerHTML = b.ng_details.length ? b.ng_details.map(n =>
+    `<tr><td>${esc(n.record_id)}</td><td>${fmtTime(n.time)}</td><td>${n.defects.map(d => esc(d.name) + (d.area != null ? `(${d.area})` : '')).join('、')}</td></tr>`).join('')
+    : '<tr><td colspan="3" class="empty">无 NG 明细</td></tr>';
+  $('detail-bg').classList.add('show');
+}
+function closeDetail() { $('detail-bg').classList.remove('show'); }
+$('detail-bg').addEventListener('click', e => { if (e.target === e.currentTarget) closeDetail(); });
+function fmtNum(v) { return v == null ? '-' : Number(v).toPrecision(6).replace(/\.?0+$/, ''); }
+
+// ---------- 规则管理 ----------
+async function loadRules() {
+  const rules = await api('/api/rules');
+  $('rule-body').innerHTML = rules.map(r => {
+    const dir = { below: '低于', above: '高于', range: '超出区间' }[r.direction];
+    const th = r.direction === 'range' ? `${r.threshold} ~ ${r.threshold_high}` : r.threshold;
+    return `<tr>
+      <td>${esc(r.name)}</td><td>${esc(r.metric)}</td><td>${dir}</td><td>${th}</td>
+      <td>${r.machine_name || '全部'}</td><td>${esc(r.category) || '全部'}</td>
+      <td><span class="badge ${r.level}">${{critical:'严重',warning:'警告',info:'提示'}[r.level]}</span></td>
+      <td>${r.enabled ? '<span class="badge ok">启用</span>' : '<span class="badge off">停用</span>'}</td>
+      <td><span class="action-link" onclick="editRule(${r.id})">编辑</span>
+          <span class="action-link" onclick="toggleRule(${r.id},${r.enabled?0:1})">${r.enabled?'停用':'启用'}</span>
+          <span class="action-link del" onclick="delRule(${r.id})">删除</span></td></tr>`;
+  }).join('') || '<tr><td colspan="9" class="empty">暂无规则</td></tr>';
+}
+
+async function loadMetricOptions() {
+  const metrics = await api('/api/metrics');
+  const machines = await api('/api/machines');
+  $('r-metric').innerHTML = metrics.map(m => `<option>${esc(m)}</option>`).join('');
+  $('r-machine').innerHTML = '<option value="">全部机台</option>' + machines.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('');
+}
+
+function fillRuleForm(r) {
+  $('r-name').value = r ? r.name : '';
+  $('r-metric').value = r ? r.metric : '良率';
+  $('r-direction').value = r ? r.direction : 'below';
+  $('r-threshold').value = r && r.threshold != null ? r.threshold : '';
+  $('r-threshold-high').value = r && r.threshold_high != null ? r.threshold_high : '';
+  $('r-machine').value = r && r.machine_id != null ? r.machine_id : '';
+  $('r-category').value = r ? (r.category || '') : '';
+  $('r-level').value = r ? r.level : 'critical';
+}
+
+async function editRule(id) {
+  const rules = await api('/api/rules');
+  fillRuleForm(rules.find(r => r.id === id));
+  editRuleId = id;
+  $('rule-msg').textContent = '正在编辑规则 #' + id;
+  window.scrollTo(0, 0);
+}
+
+async function saveRule() {
+  const body = {
+    name: $('r-name').value, metric: $('r-metric').value, direction: $('r-direction').value,
+    threshold: $('r-threshold').value === '' ? null : Number($('r-threshold').value),
+    threshold_high: $('r-threshold-high').value === '' ? null : Number($('r-threshold-high').value),
+    machine_id: $('r-machine').value === '' ? null : Number($('r-machine').value),
+    category: $('r-category').value || null,
+    level: $('r-level').value, enabled: true
+  };
+  try {
+    if (editRuleId) await api('/api/rules/' + editRuleId, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    else await api('/api/rules', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    $('rule-msg').textContent = '已保存，全部批次已按新标准重新判定';
+    editRuleId = null; fillRuleForm(null); loadRules(); loadOverview();
+  } catch (e) { $('rule-msg').textContent = '保存失败：' + e.message; }
+}
+
+async function toggleRule(id, en) {
+  const rules = await api('/api/rules');
+  const r = rules.find(x => x.id === id);
+  await api('/api/rules/' + id, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+    name: r.name, metric: r.metric, direction: r.direction, threshold: r.threshold,
+    threshold_high: r.threshold_high, machine_id: r.machine_id, category: r.category,
+    level: r.level, enabled: !!en }) });
+  loadRules(); loadOverview();
+}
+
+async function delRule(id) {
+  if (!confirm('确定删除该规则？')) return;
+  await api('/api/rules/' + id, { method: 'DELETE' });
+  loadRules(); loadOverview();
+}
+
+// ---------- 告警历史 ----------
+async function loadAlerts() {
+  const q = currentMachine ? `?machine_id=${currentMachine}` : '';
+  const alerts = await api('/api/alerts' + q);
+  $('alert-body').innerHTML = alerts.map(a =>
+    `<tr><td>${fmtTime(a.updated_at)}</td><td>${esc(a.machine_name)}</td><td>${esc(a.category)}</td>
+     <td>${esc(a.batch_name)}</td><td>${esc(a.rule_name)}</td><td>${esc(a.message)}</td>
+     <td>${a.metric_value == null ? '-' : Number(a.metric_value).toPrecision(6)}</td>
+     <td><span class="badge ${a.level}">${{critical:'严重',warning:'警告',info:'提示'}[a.level]}</span></td>
+     <td>${a.active ? '<span class="badge critical">报警中</span>' : '<span class="badge off">已解除</span>'}</td></tr>`).join('')
+    || '<tr><td colspan="9" class="empty">暂无告警记录</td></tr>';
+}
+
+// ---------- 路由与刷新 ----------
+document.querySelectorAll('.tabs button').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    tab = btn.dataset.tab;
+    ['overview','rules','alerts'].forEach(t => $('tab-' + t).style.display = t === tab ? '' : 'none');
+    refresh();
+  };
+});
+$('machine-sel').onchange = e => { currentMachine = e.target.value; refresh(); };
+
+async function refresh() {
+  try {
+    await loadMachines();
+    if (tab === 'overview') await loadOverview();
+    else if (tab === 'rules') { await loadMetricOptions(); await loadRules(); }
+    else await loadAlerts();
+  } catch (e) { console.error(e); }
+}
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>

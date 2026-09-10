@@ -1,0 +1,11 @@
+{
+  "host": "127.0.0.1",
+  "port": 8000,
+  "scan_interval": 60,
+  "default_machines": [
+    {
+      "name": "H5QJGA011",
+      "path": "10-4报表/H5QJGA011"
+    }
+  ]
+}
