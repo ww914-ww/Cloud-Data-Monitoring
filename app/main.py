@@ -48,6 +48,12 @@ class MachineIn(BaseModel):
     path: str
 
 
+class MachineEdit(BaseModel):
+    name: str | None = None
+    path: str | None = None
+    enabled: bool | None = None
+
+
 @app.get("/api/machines")
 def list_machines():
     rows = db.query("""
@@ -69,17 +75,39 @@ def add_machine(body: MachineIn):
     path = body.path.strip()
     if not os.path.isabs(path):
         path = os.path.join(BASE_DIR, path)
-    if not os.path.exists(path):
-        raise HTTPException(400, f"路径不存在: {path}")
+    # 路径暂不可达也允许登记：网络恢复后扫描线程自动上线
+    warn = None if os.path.exists(path) else "路径当前不可达，已登记，网络恢复后自动开始采集"
     mid = db.execute("INSERT INTO machines(name,path,enabled) VALUES(?,?,1)",
                      (body.name.strip(), path))
     scanner.start_machine(mid, SCAN_INTERVAL)
-    return {"id": mid}
+    return {"id": mid, "warning": warn}
 
 
 @app.put("/api/machines/{mid}")
-def toggle_machine(mid: int, enabled: bool):
-    db.execute("UPDATE machines SET enabled=? WHERE id=?", (1 if enabled else 0, mid))
+def edit_machine(mid: int, body: MachineEdit):
+    """修改机台（名称/路径/启停），路径或启停变化后扫描线程立即重启。
+
+    路径不校验存在性：允许先登记，网络恢复后自动上线扫描。
+    """
+    m = db.query_one("SELECT * FROM machines WHERE id=?", (mid,))
+    if not m:
+        raise HTTPException(404, "机台不存在")
+    name = body.name.strip() if body.name else m["name"]
+    path = body.path.strip() if body.path else m["path"]
+    enabled = m["enabled"]
+    if body.enabled is not None:
+        enabled = 1 if body.enabled else 0
+    if not name or not path:
+        raise HTTPException(400, "机台名称与路径不能为空")
+    dup = db.query_one("SELECT id FROM machines WHERE name=? AND id<>?", (name, mid))
+    if dup:
+        raise HTTPException(400, f"机台 {name} 已存在")
+
+    changed = (path != m["path"]) or (enabled != m["enabled"]) or (name != m["name"])
+    db.execute("UPDATE machines SET name=?, path=?, enabled=? WHERE id=?",
+               (name, path, enabled, mid))
+    if changed:
+        scanner.restart_machine(mid, SCAN_INTERVAL)
     return {"ok": True}
 
 

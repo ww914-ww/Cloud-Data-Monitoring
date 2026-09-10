@@ -28,16 +28,20 @@ class MachineScanner(threading.Thread):
         super().__init__(daemon=True, name=f"scanner-{machine['name']}")
         self.machine = machine
         self.interval = max(10, int(interval))
+        self.stop_event = threading.Event()
+
+    def stop(self):
+        self.stop_event.set()
 
     def run(self):
-        while True:
+        while not self.stop_event.is_set():
             try:
                 self.scan_once()
             except Exception as e:
                 # 目录不可达等：标记离线，下轮继续重试
                 db.execute("UPDATE machines SET online=0, last_error=? WHERE id=?",
                            (f"{e}", self.machine["id"]))
-            time.sleep(self.interval)
+            self.stop_event.wait(self.interval)
 
     # ---------------- 扫描主流程 ----------------
 
@@ -235,3 +239,12 @@ def start_machine(machine_id, interval):
             t = MachineScanner(m, interval)
             _threads[machine_id] = t
             t.start()
+
+
+def restart_machine(machine_id, interval):
+    """机台信息（路径等）变更后重启其扫描线程，立即生效"""
+    with _threads_lock:
+        t = _threads.pop(machine_id, None)
+        if t:
+            t.stop()
+    start_machine(machine_id, interval)

@@ -5,7 +5,7 @@
   "default_machines": [
     {
       "name": "H5QJGA011",
-      "path": "10-4报表/H5QJGA011"
+      "path": "\\\\172.16.22.138\\Shared data\\AOI\\H5QJGA011"
     }
   ]
 }

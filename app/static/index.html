@@ -77,6 +77,7 @@ td.warning, span.warning { background: var(--warn); color: #fff; border-radius: 
     <button class="active" data-tab="overview">监控总览</button>
     <button data-tab="rules">规则管理</button>
     <button data-tab="alerts">告警历史</button>
+    <button data-tab="machines">机台管理</button>
   </div>
 </div>
 
@@ -137,6 +138,30 @@ td.warning, span.warning { background: var(--warn); color: #fff; border-radius: 
       <table>
         <thead><tr><th>时间</th><th>机台</th><th>项目</th><th>批次</th><th>规则</th><th>消息</th><th>指标值</th><th>级别</th><th>状态</th></tr></thead>
         <tbody id="alert-body"></tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- 机台管理 -->
+  <div id="tab-machines" style="display:none">
+    <div class="panel">
+      <div class="panel-head"><h2>添加机台</h2><span class="muted" style="font-size:12px">路径支持网络共享（如 \\172.16.22.138\Shared data\AOI\机台名），保存后立即开始采集</span></div>
+      <div style="padding:14px 16px">
+        <div class="form-grid" style="grid-template-columns:repeat(3,1fr)">
+          <div><label>机台名称</label><input id="m-name" placeholder="如 H5QJGA011"></div>
+          <div><label>报表目录路径</label><input id="m-path" placeholder="\\172.16.22.138\Shared data\AOI\H5QJGA011"></div>
+          <div style="align-self:end"><button class="btn" onclick="addMachine()">添加机台</button></div>
+        </div>
+        <span id="machine-msg" style="font-size:13px"></span>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>已接入机台</h2><span class="muted" style="font-size:12px">修改路径/启停后立即生效，无需重启</span></div>
+      <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>机台</th><th>报表目录</th><th>状态</th><th>最后扫描</th><th>活动告警</th><th>启用</th><th>操作</th></tr></thead>
+        <tbody id="machine-body"></tbody>
       </table>
       </div>
     </div>
@@ -357,13 +382,53 @@ async function loadAlerts() {
     || '<tr><td colspan="9" class="empty">暂无告警记录</td></tr>';
 }
 
+// ---------- 机台管理 ----------
+async function loadMachinesTab() {
+  const rows = await api('/api/machines');
+  $('machine-body').innerHTML = rows.map(m => `<tr>
+    <td><b>${esc(m.name)}</b></td>
+    <td style="max-width:420px;word-break:break-all">${esc(m.path)}</td>
+    <td>${m.online ? '<span class="badge ok">在线</span>' : '<span class="badge off">离线</span>'}${m.last_error ? `<div class="muted" style="font-size:12px;max-width:280px">${esc(m.last_error).slice(0,60)}</div>` : ''}</td>
+    <td>${fmtTime(m.last_scan_at)}</td>
+    <td>${m.alert_cnt ? `<span class="badge critical">${m.alert_cnt}</span>` : '0'}</td>
+    <td>${m.enabled ? '<span class="badge ok">启用</span>' : '<span class="badge off">停用</span>'}</td>
+    <td><span class="action-link" onclick="editMachinePath(${m.id})">改路径</span>
+        <span class="action-link" onclick="toggleMachine(${m.id},${m.enabled?0:1})">${m.enabled?'停用':'启用'}</span></td></tr>`).join('')
+    || '<tr><td colspan="7" class="empty">暂无机台</td></tr>';
+}
+
+async function addMachine() {
+  const name = $('m-name').value, path = $('m-path').value;
+  if (!name || !path) { $('machine-msg').textContent = '请填写机台名称与路径'; return; }
+  try {
+    const r = await api('/api/machines', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, path }) });
+    $('machine-msg').textContent = r.warning || '已添加，开始采集';
+    $('m-name').value = ''; $('m-path').value = '';
+    refresh();
+  } catch (e) { $('machine-msg').textContent = '添加失败：' + e.message; }
+}
+
+async function editMachinePath(id) {
+  const rows = await api('/api/machines');
+  const m = rows.find(x => x.id === id);
+  const p = prompt('修改机台报表目录路径：', m.path);
+  if (p === null || p.trim() === '' || p.trim() === m.path) return;
+  await api('/api/machines/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: p.trim() }) });
+  loadMachinesTab(); refresh();
+}
+
+async function toggleMachine(id, en) {
+  await api('/api/machines/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !!en }) });
+  loadMachinesTab(); refresh();
+}
+
 // ---------- 路由与刷新 ----------
 document.querySelectorAll('.tabs button').forEach(btn => {
   btn.onclick = () => {
     document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     tab = btn.dataset.tab;
-    ['overview','rules','alerts'].forEach(t => $('tab-' + t).style.display = t === tab ? '' : 'none');
+    ['overview','rules','alerts','machines'].forEach(t => $('tab-' + t).style.display = t === tab ? '' : 'none');
     refresh();
   };
 });
@@ -374,6 +439,7 @@ async function refresh() {
     await loadMachines();
     if (tab === 'overview') await loadOverview();
     else if (tab === 'rules') { await loadMetricOptions(); await loadRules(); }
+    else if (tab === 'machines') await loadMachinesTab();
     else await loadAlerts();
   } catch (e) { console.error(e); }
 }
