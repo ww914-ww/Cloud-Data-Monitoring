@@ -7,10 +7,19 @@
 import json
 import os
 import sqlite3
+import sys
 import threading
 from datetime import datetime
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def _base_dir():
+    """项目根目录：源码运行=项目文件夹；PyInstaller 打包=exe 所在目录"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+BASE_DIR = _base_dir()
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "monitor.db")
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")

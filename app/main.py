@@ -5,6 +5,7 @@
 """
 import json
 import os
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -14,6 +15,21 @@ from pydantic import BaseModel
 from . import database as db
 from . import rules
 from . import scanner
+
+
+def _base_dir():
+    """项目根目录：源码运行=项目文件夹；PyInstaller 打包=exe 所在目录"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _static_dir():
+    """前端页面目录：源码运行=app/static；打包后=解包资源内 app/static"""
+    if getattr(sys, "frozen", False):
+        return os.path.join(sys._MEIPASS, "app", "static")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
 
 VALID_DIRECTIONS = ("below", "above", "range", "check")
 CHECK_METRICS = ("计数平衡", "相机一致性", "缺陷勾稽")
@@ -36,7 +52,7 @@ def _validate_rule(body):
         if body.direction != "range" and body.threshold is None:
             raise HTTPException(400, "请提供阈值")
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = _base_dir()
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -54,7 +70,7 @@ async def lifespan(_app):
 
 app = FastAPI(title="云盘报表数据监控", lifespan=lifespan)
 
-STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+STATIC_DIR = _static_dir()
 
 
 @app.get("/")

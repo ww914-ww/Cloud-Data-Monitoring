@@ -47,6 +47,11 @@ class MachineScanner(threading.Thread):
 
     def scan_once(self):
         root = self.machine["path"]
+        if not os.path.isdir(root):
+            # 共享不可达：标记离线，等待网络恢复后自动重试
+            db.execute("UPDATE machines SET online=0, last_error=? WHERE id=?",
+                       ("报表目录不可达", self.machine["id"]))
+            return
         found = []  # (rel, full)
         for dirpath, _dirnames, filenames in os.walk(root):
             for fn in filenames:
