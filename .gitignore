@@ -9,7 +9,7 @@ data/
 # PyInstaller 打包产物
 build/
 dist/
-绿色版/
+云端数据监控打包/
 *.spec
 
 # Python
