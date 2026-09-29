@@ -24,9 +24,6 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "monitor.db")
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 
-_conn = None
-_lock = threading.RLock()
-
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS machines (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,6 +117,10 @@ CREATE TABLE IF NOT EXISTS alerts (
     updated_at TEXT NOT NULL,
     UNIQUE(batch_id, rule_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_files_batch ON files(batch_id);
+CREATE INDEX IF NOT EXISTS idx_files_machine_status ON files(machine_id, status);
+CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(active, machine_id);
 """
 
 
@@ -127,19 +128,47 @@ def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def get_conn():
-    global _conn
-    if _conn is None:
+# ---------------- 连接层：读写分离 ----------------
+# WAL 模式天然支持多读单写并发：
+#   写 -> 专职连接 + 全局写锁（SQLite 写本来就是串行的）
+#   读 -> 每线程独立连接，不加锁（读不会被写阻塞，写也不会被读阻塞）
+_write_conn = None
+_local = threading.local()
+_lock = threading.RLock()
+
+
+def _new_conn():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")  # WAL 下安全且大幅减少 fsync
+    conn.execute("PRAGMA busy_timeout=10000")
+    return conn
+
+
+def _get_write_conn():
+    """写连接（首个创建时负责建库/迁移）"""
+    global _write_conn
+    if _write_conn is None:
         os.makedirs(DATA_DIR, exist_ok=True)
-        _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        _conn.row_factory = sqlite3.Row
-        _conn.execute("PRAGMA journal_mode=WAL")
-        _conn.execute("PRAGMA synchronous=NORMAL")  # WAL 下安全且大幅减少 fsync
-        _conn.execute("PRAGMA busy_timeout=10000")
-        _conn.executescript(SCHEMA)
-        _migrate(_conn)
-        _conn.commit()
-    return _conn
+        _write_conn = _new_conn()
+        _write_conn.executescript(SCHEMA)
+        _migrate(_write_conn)
+        _write_conn.commit()
+    return _write_conn
+
+
+def _get_read_conn():
+    """线程局部读连接：WAL 快照读，无需加锁"""
+    conn = getattr(_local, "conn", None)
+    if conn is None:
+        conn = _local.conn = _new_conn()
+    return conn
+
+
+def get_conn():
+    """兼容入口：确保库已初始化，返回写连接"""
+    return _get_write_conn()
 
 
 # 已有库的结构升级：缺失列自动补齐（存量行按默认 0 处理）
@@ -163,7 +192,7 @@ def _migrate(conn):
 def execute(sql, params=()):
     """线程安全执行写操作，返回 lastrowid"""
     with _lock:
-        conn = get_conn()
+        conn = _get_write_conn()
         cur = conn.execute(sql, params)
         conn.commit()
         return cur.lastrowid
@@ -172,17 +201,17 @@ def execute(sql, params=()):
 def execute_many(sql, seq):
     """线程安全批量执行写操作（单事务，避免逐行提交）"""
     with _lock:
-        conn = get_conn()
+        conn = _get_write_conn()
         conn.executemany(sql, seq)
         conn.commit()
 
 
 def query(sql, params=()):
-    """线程安全查询，返回 list[dict]"""
-    with _lock:
-        conn = get_conn()
-        rows = conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
+    """线程安全查询：走线程局部读连接，WAL 快照读不阻塞写、也不被写阻塞"""
+    _get_write_conn()  # 幂等确保库已初始化
+    conn = _get_read_conn()
+    rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
 
 
 def query_one(sql, params=()):

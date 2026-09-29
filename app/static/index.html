@@ -120,7 +120,7 @@ td.warning, span.warning { background: var(--warn); color: #fff; border-radius: 
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h2>已有规则</h2><span class="muted" style="font-size:12px">修改保存后立即生效并重新判定</span></div>
+      <div class="panel-head"><h2>已有规则</h2><span id="rejudge-progress" class="muted" style="font-size:12px;color:var(--warn)"></span><span class="muted" style="font-size:12px;margin-left:auto">修改保存后立即生效，历史批次后台重判</span></div>
       <div style="overflow-x:auto">
       <table>
         <thead><tr><th>名称</th><th>指标</th><th>判定方式</th><th>阈值</th><th>适用机台</th><th>适用项目</th><th>级别</th><th>状态</th><th>操作</th></tr></thead>
@@ -330,6 +330,12 @@ function renderMetricOptions() {
 
 function onDirectionChange() { renderMetricOptions(); }
 
+async function refreshRejudge() {
+  const s = await api('/api/rejudge-status');
+  const el = $('rejudge-progress');
+  el.textContent = s.running ? `历史批次重判中 ${s.done}/${s.total}…` : '';
+}
+
 function fillRuleForm(r) {
   $('r-name').value = r ? r.name : '';
   $('r-direction').value = r ? r.direction : 'below';
@@ -362,8 +368,8 @@ async function saveRule() {
   try {
     if (editRuleId) await api('/api/rules/' + editRuleId, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
     else await api('/api/rules', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-    $('rule-msg').textContent = '已保存，全部批次已按新标准重新判定';
-    editRuleId = null; fillRuleForm(null); loadRules(); loadOverview();
+    $('rule-msg').textContent = '已保存，历史批次正在后台重判';
+    editRuleId = null; fillRuleForm(null); loadRules(); loadOverview(); refreshRejudge();
   } catch (e) { $('rule-msg').textContent = '保存失败：' + e.message; }
 }
 
@@ -452,7 +458,7 @@ async function refresh() {
   try {
     await loadMachines();
     if (tab === 'overview') await loadOverview();
-    else if (tab === 'rules') { await loadMetricOptions(); await loadRules(); }
+    else if (tab === 'rules') { await loadMetricOptions(); await loadRules(); refreshRejudge(); }
     else if (tab === 'machines') await loadMachinesTab();
     else await loadAlerts();
   } catch (e) { console.error(e); }

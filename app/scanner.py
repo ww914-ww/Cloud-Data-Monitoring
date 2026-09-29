@@ -52,74 +52,86 @@ class MachineScanner(threading.Thread):
             db.execute("UPDATE machines SET online=0, last_error=? WHERE id=?",
                        ("报表目录不可达", self.machine["id"]))
             return
-        found = []  # (rel, full)
+
+        # 1) walk 收集指纹（每文件一次 stat，不可避免的开销）
+        found = {}  # rel_path -> (full, size, mtime)
         for dirpath, _dirnames, filenames in os.walk(root):
             for fn in filenames:
                 if fn.lower().endswith(".xlsx") and not fn.startswith("~$"):
                     full = os.path.join(dirpath, fn)
-                    found.append((os.path.relpath(full, root), full))
+                    try:
+                        st = os.stat(full)
+                    except OSError:
+                        continue  # 扫描瞬间文件消失（正在重命名等），下轮再看
+                    found[os.path.relpath(full, root)] = (full, st.st_size, st.st_mtime)
         db.execute("UPDATE machines SET online=1, last_scan_at=?, last_error=NULL WHERE id=?",
                    (db.now_str(), self.machine["id"]))
 
-        # 阶段1：登记新文件 / pending→stable / 检测指纹变化
-        changed_batches = set()  # (category, batch_name)
-        for rel, full in found:
-            if self._register(rel, full, changed_batches) is None:
+        # 2) 一次性读出该机台全部文件指纹，内存比对差量
+        #    （消除"每文件一次 SELECT"的库往返，文件量上万时的主要开销）
+        db_files = {r["rel_path"]: r for r in db.query(
+            "SELECT id, rel_path, kind, size, mtime, status, first_size FROM files "
+            "WHERE machine_id=?", (self.machine["id"],))}
+
+        inserts = []          # 新文件
+        to_stable = []        # pending -> stable 的文件 id
+        to_refirst = []       # pending 且大小仍变化 -> 刷新 first_size (id, size)
+        stable_rels = []      # 本轮需要解析的 (rel, full)
+        changed_batches = set()
+
+        for rel, (full, size, mtime) in found.items():
+            info = parser.split_rel_path(self.machine["name"], rel)
+            if info is None:
                 continue
+            category, batch_name, kind = info
+            row = db_files.get(rel)
 
-        # 阶段2：指纹变化的批次整体重算（清数据，文件回 stable）
+            if row is None:
+                # 新文件：mtime 距今很久 → 显然非传输中，直接 stable
+                status = "stable" if (time.time() - mtime) > STABLE_ASSUME_SEC else "pending"
+                inserts.append((self.machine["id"], rel, kind, size, mtime, status,
+                                size, db.now_str()))
+                if status == "stable":
+                    stable_rels.append((rel, full))
+            elif row["status"] == "pending":
+                if size == row["first_size"]:
+                    to_stable.append(row["id"])
+                    stable_rels.append((rel, full))
+                else:
+                    to_refirst.append((size, row["id"]))  # 大小仍在变，继续等待
+            elif row["status"] == "stable":
+                stable_rels.append((rel, full))
+            else:  # done / error：指纹变化才重做
+                if size != row["size"] or mtime != row["mtime"]:
+                    changed_batches.add((category, batch_name))
+
+        # 3) 差量批量落库
+        if inserts:
+            db.execute_many(
+                "INSERT OR IGNORE INTO files(machine_id,rel_path,kind,size,mtime,status,"
+                "first_size,first_seen) VALUES(?,?,?,?,?,?,?,?)", inserts)
+        if to_stable:
+            db.execute_many("UPDATE files SET status='stable' WHERE id=?",
+                             [(i,) for i in to_stable])
+        if to_refirst:
+            db.execute_many("UPDATE files SET first_size=? WHERE id=?", to_refirst)
+
+        # 4) 指纹变化的批次整体重算（清数据，文件回 stable，随本轮重新解析）
         for category, batch_name in changed_batches:
-            self._reset_batch(category, batch_name)
+            stable_rels.extend(self._reset_batch(category, batch_name))
 
-        # 阶段3：解析所有 stable 文件
-        for rel, full in found:
-            self._process_if_stable(rel, full)
-
-    def _register(self, rel, full, changed_batches):
-        """登记/推进文件状态。返回 None 表示无法归类。"""
-        info = parser.split_rel_path(self.machine["name"], rel)
-        if info is None:
-            return None
-        category, batch_name, kind = info
-        st = os.stat(full)
-        size, mtime = st.st_size, st.st_mtime
-
-        row = db.query_one(
-            "SELECT * FROM files WHERE machine_id=? AND rel_path=?",
-            (self.machine["id"], rel))
-
-        if row is None:
-            # 新文件：mtime 距今很久 → 直接 stable，否则 pending 等下一轮确认
-            status = "stable" if (time.time() - mtime) > STABLE_ASSUME_SEC else "pending"
-            db.execute(
-                "INSERT INTO files(machine_id,rel_path,kind,size,mtime,status,"
-                "first_size,first_seen) VALUES(?,?,?,?,?,?,?,?)",
-                (self.machine["id"], rel, kind, size, mtime, status, size, db.now_str()))
-            return status
-
-        if row["status"] == "pending":
-            if size == row["first_size"]:
-                db.execute("UPDATE files SET status='stable' WHERE id=?", (row["id"],))
-            else:
-                # 大小仍在变，继续等待
-                db.execute("UPDATE files SET first_size=? WHERE id=?", (size, row["id"]))
-        elif row["status"] == "done":
-            if size != row["size"] or mtime != row["mtime"]:
-                # 文件被重新上传/改写 → 批次重算
-                changed_batches.add((category, batch_name))
-        # error 状态：文件指纹变化时才重试
-        elif row["status"] == "error":
-            if size != row["size"] or mtime != row["mtime"]:
-                db.execute("UPDATE files SET status='stable' WHERE id=?", (row["id"],))
-        return row["status"]
+        # 5) 解析所有 stable 文件
+        for rel, full in stable_rels:
+            self._process_stable(rel, full)
 
     def _reset_batch(self, category, batch_name):
-        """批次数据整体重算：清空聚合/明细/告警，文件回 stable。"""
+        """批次数据整体重算：清空聚合/明细/告警，文件回 stable。
+        返回重置后的 [(rel, full)] 供本轮继续解析。"""
         batch = db.query_one(
             "SELECT id FROM batches WHERE machine_id=? AND category=? AND batch_name=?",
             (self.machine["id"], category, batch_name))
         if not batch:
-            return
+            return []
         bid = batch["id"]
         db.execute("DELETE FROM ng_details WHERE batch_id=?", (bid,))
         db.execute("DELETE FROM measure_stats WHERE batch_id=?", (bid,))
@@ -127,12 +139,14 @@ class MachineScanner(threading.Thread):
         db.execute("UPDATE batches SET total=0, ok_count=0, ng_count=0, other_count=0, "
                    "first_time=NULL, last_time=NULL, updated_at=? WHERE id=?",
                    (db.now_str(), bid))
-        # 该批次下所有文件（含 done/error）重置为 stable 重新解析
+        rows = db.query("SELECT rel_path FROM files WHERE batch_id=?", (bid,))
         db.execute("UPDATE files SET status='stable' WHERE batch_id=?", (bid,))
+        return [(r["rel_path"], os.path.join(self.machine["path"], r["rel_path"]))
+                for r in rows]
 
     # ---------------- 解析入库 ----------------
 
-    def _process_if_stable(self, rel, full):
+    def _process_stable(self, rel, full):
         row = db.query_one(
             "SELECT * FROM files WHERE machine_id=? AND rel_path=?",
             (self.machine["id"], rel))

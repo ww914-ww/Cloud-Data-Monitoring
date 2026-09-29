@@ -6,6 +6,7 @@
 import json
 import os
 import sys
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -208,6 +209,60 @@ def list_alerts(machine_id: int | None = None, active_only: bool = False):
     return db.query(sql, params)
 
 
+# ---------------- 规则变化后的重判 ----------------
+# 原则：不做全量重判。
+#   删除/停用规则 -> 仅反激活该规则的告警（一条 UPDATE）
+#   新增/修改/启用规则 -> SQL 筛出"受影响批次"（范围 + 指标有数据），
+#                         后台线程重判，API 立即返回，前端显示进度。
+_rejudge_epoch = 0            # 每次触发 +1，旧线程发现变化自动让位
+_rejudge_state = {"running": False, "done": 0, "total": 0}
+
+
+def _affected_batch_ids(rule):
+    """筛出该规则可能产生判定变化的批次 id 列表（SQL 集合筛选，不做逐批查询）"""
+    sql = "SELECT b.id FROM batches b WHERE 1=1"
+    params = []
+    if rule["machine_id"]:
+        sql += " AND b.machine_id=?"
+        params.append(rule["machine_id"])
+    if rule["category"]:
+        sql += " AND b.category=?"
+        params.append(rule["category"])
+    m = rule["metric"]
+    if m in ("良率", "NG数"):
+        sql += " AND b.total>0"           # 有判定数据的批次
+    elif m in CHECK_METRICS:
+        sql += " AND EXISTS (SELECT 1 FROM files f WHERE f.batch_id=b.id" \
+               " AND f.kind='defect' AND f.status='done')"  # 一致性校验：有缺陷文件的批次
+    else:
+        sql += " AND EXISTS (SELECT 1 FROM measure_stats ms WHERE ms.batch_id=b.id" \
+               " AND ms.metric_name=?)"   # 测量类：含该指标的批次
+        params.append(m)
+    return [r["id"] for r in db.query(sql, params)]
+
+
+def _rejudge_async(rule):
+    """后台重判受影响批次。连续多次改动时旧线程自动让位（epoch 机制）。"""
+    global _rejudge_epoch
+    _rejudge_epoch += 1
+    epoch = _rejudge_epoch
+    ids = _affected_batch_ids(rule)
+    threading.Thread(target=_rejudge_worker, args=(ids, epoch), daemon=True).start()
+
+
+def _rejudge_worker(ids, epoch):
+    _rejudge_state.update(running=True, done=0, total=len(ids))
+    try:
+        for i, bid in enumerate(ids):
+            if epoch != _rejudge_epoch:
+                return  # 有更新的规则改动接管了重判
+            rules.evaluate_batch(bid)
+            _rejudge_state["done"] = i + 1
+    finally:
+        if epoch == _rejudge_epoch:
+            _rejudge_state.update(running=False)
+
+
 # ---------------- 规则 ----------------
 
 class RuleIn(BaseModel):
@@ -245,7 +300,8 @@ def add_rule(body: RuleIn):
         (body.name.strip(), body.metric, body.direction, body.threshold,
          body.threshold_high, body.machine_id, body.category or None,
          body.level, 1 if body.enabled else 0, db.now_str()))
-    _rejudge_all()
+    if body.enabled:
+        _rejudge_async(body.model_dump())
     return {"id": rid}
 
 
@@ -261,19 +317,22 @@ def update_rule(rid: int, body: RuleIn):
         (body.name.strip(), body.metric, body.direction, body.threshold,
          body.threshold_high, body.machine_id, body.category or None,
          body.level, 1 if body.enabled else 0, rid))
-    _rejudge_all()
+    if body.enabled:
+        _rejudge_async(body.model_dump())
+    else:
+        # 停用：只需解除该规则的活动告警，无需重判
+        db.execute("UPDATE alerts SET active=0 WHERE rule_id=?", (rid,))
     return {"ok": True}
 
 
 @app.delete("/api/rules/{rid}")
 def delete_rule(rid: int):
+    # 删除规则：其告警一并删除，其他规则的判定不受影响，无需重判
     db.execute("DELETE FROM alerts WHERE rule_id=?", (rid,))
     db.execute("DELETE FROM rules WHERE id=?", (rid,))
-    _rejudge_all()
     return {"ok": True}
 
 
-def _rejudge_all():
-    """规则变化后对全部已有批次重新判定，保证界面立即反映新标准"""
-    for b in db.query("SELECT id FROM batches"):
-        rules.evaluate_batch(b["id"])
+@app.get("/api/rejudge-status")
+def rejudge_status():
+    return _rejudge_state
